@@ -7,51 +7,113 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 
     <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css"
-        integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-+0n0xVW2eSR5OomGNYDnhzAbDsOXxcvSN1TPprVMTNDbiYZCxYbOOl7+AMvyTG2x" crossorigin="anonymous">
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 
     <title>Hello, world!</title>
 </head>
 
 <body>
-    <h1>Perpetual Futures Strategy</h1>
 
 
-    <div class="container-fluid"></div>
-    <div id="chart" class="row"></div>
+
+    <div class="container-fluid">
+        <h1>Perpetual Futures Strategy</h1>
+        <div class="row">
+            <div id="chart" class="col"></div>
+            <div id="chart2" class="col"></div>
+        </div>
+    </div>
     <script>
-        const chart = LightweightCharts.createChart(document.getElementById("chart"), { height: 400 });
-        chart.applyOptions({
+        var chart = LightweightCharts.createChart(document.getElementById('chart'), {
+            width: 1000,
+            height: 500,
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+            priceScale: {
+                borderColor: 'rgba(197, 203, 206, 0.8)',
+            },
             timeScale: {
+                borderColor: 'rgba(197, 203, 206, 0.8)',
                 timeVisible: true,
-                secondsVisible: true,
-                tickMarkFormatter: (time, tickMarkType, locale) => {
-                    const year = LightweightCharts.isBusinessDay(time) ? time.year : new Date(time * 1000).getUTCDate();
-                    return String(time);
-                },
+                secondsVisible: false,
             },
         });
-        const lineSeries = chart.addLineSeries();
-        data = []
-        const ws = new WebSocket("ws://localhost:8000/ws")
-        ws.onmessage = function (event) {
-            const newData = JSON.parse(event.data);
-            data.push({ time: newData.E / 1000, value: parseFloat(newData.k.c) });
-            lineSeries.setData(data);
-        };
+
+        var candleSeries = chart.addCandlestickSeries()
+        // var candleSeries = chart.addCandlestickSeries({
+        //     upColor: '#00ff00',
+        //     downColor: '#ff0000',
+        //     borderDownColor: 'rgba(255, 144, 0, 1)',
+        //     borderUpColor: 'rgba(255, 144, 0, 1)',
+        //     wickDownColor: 'rgba(255, 144, 0, 1)',
+        //     wickUpColor: 'rgba(255, 144, 0, 1)',
+        // });
+
+        fetch('http://localhost:8000/klines/futures/BTCUSDT')
+            .then((r) => r.json())
+            .then((response) => {
+                console.log(response)
+
+                candleSeries.setData(response);
+            })
+
+
+        var binanceSocket = new WebSocket("ws://localhost:8000/ws/futures/BTCUSDT");
+
+        binanceSocket.onmessage = function (event) {
+            var message = JSON.parse(event.data);
+            candleSeries.update(message)
+        }
+
+        var chart2 = LightweightCharts.createChart(document.getElementById('chart2'), {
+            width: 1000,
+            height: 500,
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+            priceScale: {
+                borderColor: 'rgba(197, 203, 206, 0.8)',
+            },
+            timeScale: {
+                borderColor: 'rgba(197, 203, 206, 0.8)',
+                timeVisible: true,
+                secondsVisible: false,
+            },
+        });
+
+        var candleSeries2 = chart2.addCandlestickSeries()
+        // var candleSeries = chart.addCandlestickSeries({
+        //     upColor: '#00ff00',
+        //     downColor: '#ff0000',
+        //     borderDownColor: 'rgba(255, 144, 0, 1)',
+        //     borderUpColor: 'rgba(255, 144, 0, 1)',
+        //     wickDownColor: 'rgba(255, 144, 0, 1)',
+        //     wickUpColor: 'rgba(255, 144, 0, 1)',
+        // });
+
+        fetch('http://localhost:8000/klines/spot/BTCUSDT')
+            .then((r) => r.json())
+            .then((response) => {
+                console.log(response)
+
+                candleSeries2.setData(response);
+            })
+
+
+        var binanceSockets2 = new WebSocket("ws://localhost:8000/ws/spot/BTCUSDT");
+
+        binanceSockets2.onmessage = function (event) {
+            var message = JSON.parse(event.data);
+            candleSeries2.update(message)
+        }
     </script>
 
     <!-- Optional JavaScript -->
-    <!-- jQuery first, then Popper.js, then Bootstrap JS -->
-    <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"
-        integrity="sha384-KJ3o2DKtIkvYIK3UENzmM7KCkRr/rE9/Qpg6aAZGJwFDMVNA/GpGFF93hXpG5KkN"
-        crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"
-        integrity="sha384-ApNbgh9B+Y1QKtv3Rn7W3mgPxhU9K/ScQsAP7hUibX39j7fakFPskvXusvfa0b4Q"
-        crossorigin="anonymous"></script>
-    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js"
-        integrity="sha384-JZR6Spejh4U02d8jOt6vLEHfe/JQGiRRSQQxSfFWpi1MquVdAyjUar5+76PVCmYl"
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-gtEjrD/SeCtmISkJkNUaaKMoLD0//ElJ19smozuHV6z3Iehds+3Ulb9Bn9Plx0x4"
         crossorigin="anonymous"></script>
 
 </body>

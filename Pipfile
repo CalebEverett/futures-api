@@ -18,6 +18,8 @@ uvicorn = {extras = ["standard"], version = "*"}
 websockets = "*"
 aiofiles = "*"
 python-binance = "*"
+jinja2 = "*"
+pandas = "*"
 
 [requires]
 python_version = "3.8"
