@@ -8,7 +8,7 @@
 <body>
     <div id="chart"></div>
     <script>
-        const ws = new WebSocket("ws://localhost:8000/spread/BTCUSDT")
+        const ws = new WebSocket("ws://localhost:8000/market-stream/futures")
         ws.onmessage = function (event) {
             console.log(event.data)
         };

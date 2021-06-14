@@ -3,6 +3,7 @@ from enum import Enum
 from functools import partial
 import json
 import os
+from re import L
 
 from binance import AsyncClient, BinanceSocketManager, enums
 from fastapi import FastAPI
@@ -59,7 +60,7 @@ def read_root(request: Request):
 
 
 @app.get("/klines/{market}/{symbol}")
-async def get_klines(market: marketName, symbol: str):
+async def get_kline_history(market: marketName, symbol: str):
     client = await async_client()
 
     methods = {
@@ -85,7 +86,7 @@ async def get_klines(market: marketName, symbol: str):
 
 
 @app.get("/spread/{symbol}")
-async def get_klines(symbol: str):
+async def get_spread_history(symbol: str):
     client = await async_client()
 
     methods = [client.futures_klines, client.get_klines]
@@ -120,7 +121,7 @@ async def get_klines(symbol: str):
 
 
 @app.websocket("/klines/futures/{symbol}")
-async def websocket_endpoint(websocket: WebSocket, symbol: str):
+async def get_klines_stream_futures(websocket: WebSocket, symbol: str):
     await websocket.accept()
 
     client = await async_client()
@@ -139,7 +140,7 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
 
 
 @app.websocket("/klines/spot/{symbol}")
-async def websocket_endpoint(websocket: WebSocket, symbol: str):
+async def get_klines_stream_spot(websocket: WebSocket, symbol: str):
     await websocket.accept()
 
     client = await async_client()
@@ -156,7 +157,7 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
 
 
 @app.websocket("/spread/{symbol}")
-async def websocket_endpoint(websocket: WebSocket, symbol: str):
+async def get_spread_stream(websocket: WebSocket, symbol: str):
     """
     This effectively combines the futures and spot websocket streams from
     different endpoints and calculates the spread between them as a candlestick.
@@ -221,3 +222,18 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
     res = await asyncio.gather(
         futures_kline_listener(client), spot_kline_listener(client)
     )
+
+
+@app.websocket("/market-stream/futures")
+async def get_market_stream_futures(websocket: WebSocket):
+    await websocket.accept()
+
+    client = await async_client()
+    bm = BinanceSocketManager(client)
+
+    async with bm._get_futures_socket(
+        path=f"!markPrice@arr", futures_type=enums.FuturesType.USD_M
+    ) as stream:
+        while True:
+            res = await stream.recv()
+            await websocket.send_json(res)
