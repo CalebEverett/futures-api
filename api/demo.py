@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 import json
@@ -13,6 +14,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
+
+
+def get_utc_timestamp(iso_format_datetime: str):
+    return int(
+        datetime.fromisoformat(iso_format_datetime)
+        .replace(tzinfo=timezone.utc)
+        .timestamp()
+        * 1000
+    )
+
+
+def get_utc_timestamp_now():
+    return int(
+        datetime.now(timezone.utc).replace(tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+
+def get_times(start_time: str, end_time: str):
+    """
+    Return utc timestamps from isoformat datetime strings.
+    """
+
+    if start_time is not None:
+        start_time = get_utc_timestamp(start_time)
+
+    if end_time is None:
+        end_time = get_utc_timestamp_now()
+    else:
+        end_time = min(get_utc_timestamp_now(), get_utc_timestamp(end_time))
+
+    return start_time, end_time
 
 
 origins = [
@@ -83,6 +115,25 @@ async def get_kline_history(market: marketName, symbol: str):
         k["time"] = k["time"] / 1000
 
     return processed_klines
+
+
+@app.get("/funding/{symbol}/")
+async def get_spread_history(
+    symbol: str, start_time: str = None, end_time: str = None, limit: int = 1000
+):
+    client = await async_client()
+
+    start_time, end_time = get_times(start_time, end_time)
+
+    res = await client.futures_funding_rate(
+        symbol=symbol, startTime=start_time, endTime=end_time, limit=limit
+    )
+
+    processed_rates = [
+        {"time": r["fundingTime"] / 1000, "value": r["fundingRate"]} for r in res
+    ]
+
+    return processed_rates
 
 
 @app.get("/spread/{symbol}")
@@ -232,8 +283,11 @@ async def get_market_stream_futures(websocket: WebSocket):
     bm = BinanceSocketManager(client)
 
     async with bm._get_futures_socket(
-        path=f"!markPrice@arr", futures_type=enums.FuturesType.USD_M
+        path=f"!markPrice@arr@1s", futures_type=enums.FuturesType.USD_M
     ) as stream:
         while True:
             res = await stream.recv()
+            # for r in res["data"]:
+            #     print(r)
+            #     r.setattr(r, "T", r["T"] / 1000)
             await websocket.send_json(res)
