@@ -2,18 +2,19 @@ import asyncio
 from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
-import json
 import os
-from re import L
+from typing import List
 
 from binance import AsyncClient, BinanceSocketManager, enums
 from fastapi import FastAPI
 from fastapi import Request
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
+from starlette.websockets import WebSocketState
+from websockets.exceptions import ConnectionClosedOK
 
 
 def get_utc_timestamp(iso_format_datetime: str):
@@ -84,11 +85,21 @@ async_client = partial(
 class marketName(str, Enum):
     futures = "futures"
     spot = "spot"
+    margin = "margin"
 
 
 @app.get("/")
 def read_root(request: Request):
     return templates.TemplateResponse("index.htm", {"request": request})
+
+
+@app.get("/account")
+async def get_account():
+    client = await async_client()
+
+    res = await client.futures_position_information()
+
+    return [p for p in res if float(p["positionAmt"]) != 0]
 
 
 @app.get("/klines/{market}/{symbol}")
@@ -123,11 +134,10 @@ async def get_spread_history(
 ):
     client = await async_client()
 
-    start_time, end_time = get_times(start_time, end_time)
+    # start_time, end_time = get_times(start_time, end_time)
+    # startTime=start_time, endTime=end_time,
 
-    res = await client.futures_funding_rate(
-        symbol=symbol, startTime=start_time, endTime=end_time, limit=limit
-    )
+    res = await client.futures_funding_rate(symbol=symbol, limit=limit)
 
     processed_rates = [
         {"time": r["fundingTime"] / 1000, "value": r["fundingRate"]} for r in res
@@ -285,9 +295,24 @@ async def get_market_stream_futures(websocket: WebSocket):
     async with bm._get_futures_socket(
         path=f"!markPrice@arr@1s", futures_type=enums.FuturesType.USD_M
     ) as stream:
-        while True:
-            res = await stream.recv()
-            # for r in res["data"]:
-            #     print(r)
-            #     r.setattr(r, "T", r["T"] / 1000)
-            await websocket.send_json(res)
+        try:
+            while websocket.client_state == WebSocketState.CONNECTED:
+                res = await stream.recv()
+                # for r in res["data"]:
+                #     print(r)
+                #     r.setattr(r, "T", r["T"] / 1000)
+                await websocket.send_json(res)
+        except ConnectionClosedOK:
+            print("connection to /user/spot closed")
+
+
+@app.websocket("/user/spot")
+async def get_user_stream_spot(websocket: WebSocket):
+    await websocket.accept()
+
+    try:
+        while websocket.client_state == WebSocketState.CONNECTED:
+            await asyncio.sleep(1)
+            await websocket.send_json("yo")
+    except ConnectionClosedOK:
+        print("connection to /user/spot closed")
