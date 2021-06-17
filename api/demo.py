@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 import os
-from typing import List
+from typing import Dict, List
 
 from binance import AsyncClient, BinanceSocketManager, enums
 from fastapi import FastAPI
@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
+from pydantic import BaseModel
 from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosedOK
 
@@ -116,16 +117,14 @@ async def get_account():
         client.get_margin_account(), client.futures_position_information()
     )
 
-    account_info["futures"] = [p for p in res[1] if float(p["positionAmt"]) != 0]
+    account_info = [p for p in res[1] if float(p["positionAmt"]) != 0]
     margin_positions = {
         p["asset"]: {"netAsset": p["netAsset"]}
         for p in res[0]["userAssets"]
         if float(p["netAsset"]) != 0
     }
-    # for p in margin_positions:
-    #     margin_positions[p]["netAsset"] = p["netAsset"]
 
-    for p in account_info["futures"]:
+    for p in account_info:
         p["spotPositionAmt"] = margin_positions[p["symbol"].replace("USDT", "")][
             "netAsset"
         ]
@@ -153,7 +152,38 @@ async def get_trades():
     df["qty_cumsum"] = df.groupby(["symbol"]).cumsum().qty
 
     return df.to_dict(orient="records")
-    # df[df.qty_cumsum != 0].to_dict(orient="records")
+
+
+class Position(BaseModel):
+    symbol: str
+    futuresQty: float
+    spotQty: float
+
+
+@app.post("/close-positions")
+async def get_trades(position: Position):
+    client = await async_client()
+
+    futures_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.futuresQty),
+        "side": "BUY" if position.futuresQty < 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    spot_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.spotQty),
+        "side": "BUY" if position.spotQty < 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    res = await asyncio.gather(
+        client.create_margin_order(**spot_params),
+        client.futures_create_order(**futures_params),
+    )
+
+    return res
 
 
 @app.get("/klines/{market}/{symbol}")
