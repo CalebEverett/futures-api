@@ -17,6 +17,20 @@ from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosedOK
 
 
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "DOGEUSDT",
+    "XRPUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "DOTUSDT",
+    "MATICUSDT",
+    "EOSUSDT",
+    "LINKUSDT",
+]
+
+
 def get_utc_timestamp(iso_format_datetime: str):
     return int(
         datetime.fromisoformat(iso_format_datetime)
@@ -97,9 +111,49 @@ def read_root(request: Request):
 async def get_account():
     client = await async_client()
 
-    res = await client.futures_position_information()
+    account_info = {}
+    res = await asyncio.gather(
+        client.get_margin_account(), client.futures_position_information()
+    )
 
-    return [p for p in res if float(p["positionAmt"]) != 0]
+    account_info["futures"] = [p for p in res[1] if float(p["positionAmt"]) != 0]
+    margin_positions = {
+        p["asset"]: {"netAsset": p["netAsset"]}
+        for p in res[0]["userAssets"]
+        if float(p["netAsset"]) != 0
+    }
+    # for p in margin_positions:
+    #     margin_positions[p]["netAsset"] = p["netAsset"]
+
+    for p in account_info["futures"]:
+        p["spotPositionAmt"] = margin_positions[p["symbol"].replace("USDT", "")][
+            "netAsset"
+        ]
+
+    return account_info
+
+
+@app.get("/income-history")
+async def get_income_history():
+    client = await async_client()
+
+    res = await client.futures_income_history()
+
+    return res
+
+
+@app.get("/trades")
+async def get_trades():
+    client = await async_client()
+
+    res = await client.futures_account_trades()
+
+    df = pd.DataFrame(res).astype({"qty": float}).sort_values(["symbol", "time"])
+    df.qty = df.qty * ((df.side == "SELL") * -1 + (df.side == "BUY"))
+    df["qty_cumsum"] = df.groupby(["symbol"]).cumsum().qty
+
+    return df.to_dict(orient="records")
+    # df[df.qty_cumsum != 0].to_dict(orient="records")
 
 
 @app.get("/klines/{market}/{symbol}")
@@ -110,11 +164,6 @@ async def get_kline_history(market: marketName, symbol: str):
         marketName.futures: client.futures_klines,
         marketName.spot: client.get_klines,
     }
-
-    if market == marketName.futures:
-        res = await client.futures_klines(
-            symbol=symbol, interval=client.KLINE_INTERVAL_1MINUTE
-        )
 
     res = await methods[market](symbol=symbol, interval=client.KLINE_INTERVAL_1MINUTE)
 
@@ -243,7 +292,7 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
                 res = await stream.recv()
                 kline_futures = res["data"]["k"]
 
-                if kline_spots[0] and kline_futures:
+                if kline_spots[0]:
 
                     kline_spot = kline_spots[0]
                     processed_kline = {
@@ -298,12 +347,66 @@ async def get_market_stream_futures(websocket: WebSocket):
         try:
             while websocket.client_state == WebSocketState.CONNECTED:
                 res = await stream.recv()
-                # for r in res["data"]:
-                #     print(r)
-                #     r.setattr(r, "T", r["T"] / 1000)
+                res = [r for r in res["data"] if r["s"] in SYMBOLS]
                 await websocket.send_json(res)
         except ConnectionClosedOK:
-            print("connection to /user/spot closed")
+            print("connection to /market-stream/futures closed")
+
+
+@app.websocket("/market-stream/spot")
+async def get_market_stream_spot(websocket: WebSocket):
+    await websocket.accept()
+
+    client = await async_client()
+    bm = BinanceSocketManager(client)
+
+    [f"{s.lower()}@ticker" for s in SYMBOLS]
+
+    async with bm.multiplex_socket([f"{s.lower()}@ticker" for s in SYMBOLS]) as stream:
+        try:
+            while websocket.client_state == WebSocketState.CONNECTED:
+                res = await stream.recv()
+                await websocket.send_json(res)
+        except ConnectionClosedOK:
+            print("connection to /market-stream/spot closed")
+
+
+@app.websocket("/market-stream")
+async def get_market_stream(websocket: WebSocket):
+    """ """
+
+    await websocket.accept()
+    client = await async_client()
+    spot_prices = [{}]
+
+    async def futures_market_stream(client):
+        bm = BinanceSocketManager(client)
+        async with bm._get_futures_socket(
+            path=f"!markPrice@arr@1s", futures_type=enums.FuturesType.USD_M
+        ) as stream:
+            while websocket.client_state == WebSocketState.CONNECTED:
+                res = await stream.recv()
+                res = [r for r in res["data"] if r["s"] in SYMBOLS]
+
+                if len(spot_prices[0]) == len(SYMBOLS):
+                    for r in res:
+                        r["spotPrice"] = spot_prices[0][r["s"]]
+                        r["spread"] = float(r["p"]) / float(r["spotPrice"]) - 1
+                    await websocket.send_json(res)
+
+    async def spot_market_stream(client):
+        bm = BinanceSocketManager(client)
+        async with bm.multiplex_socket(
+            [f"{s.lower()}@ticker" for s in SYMBOLS]
+        ) as stream:
+            while True:
+                res = await stream.recv()
+                symbol = res["stream"].split("@")[0].upper()
+                spot_prices[0][symbol] = res["data"]["c"]
+
+    res = await asyncio.gather(
+        futures_market_stream(client), spot_market_stream(client)
+    )
 
 
 @app.websocket("/user/spot")
