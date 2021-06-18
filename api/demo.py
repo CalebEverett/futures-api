@@ -108,28 +108,74 @@ def read_root(request: Request):
     return templates.TemplateResponse("index.htm", {"request": request})
 
 
+@app.get("/exchange")
+async def get_exhange_info():
+    client = await async_client()
+
+    async def get_futures_exchange_info():
+        symbol_info = await client.futures_exchange_info()
+        return [s for s in symbol_info["symbols"] if s["symbol"] == SYMBOLS[0]]
+
+    async def get_exchange_info():
+        symbol_info = await client.get_exchange_info()
+        return [s for s in symbol_info["symbols"] if s["symbol"] == SYMBOLS[0]]
+
+    res = await asyncio.gather(get_futures_exchange_info(), get_exchange_info())
+
+    return res
+
+
 @app.get("/account")
 async def get_account():
     client = await async_client()
 
-    account_info = {}
     res = await asyncio.gather(
-        client.get_margin_account(), client.futures_position_information()
+        client.futures_position_information(), client.get_margin_account()
     )
 
-    account_info = [p for p in res[1] if float(p["positionAmt"]) != 0]
     margin_positions = {
         p["asset"]: {"netAsset": p["netAsset"]}
-        for p in res[0]["userAssets"]
-        if float(p["netAsset"]) != 0
+        for p in res[1]["userAssets"]
+        if f"{p['asset']}USDT" in SYMBOLS
     }
 
-    for p in account_info:
-        p["spotPositionAmt"] = margin_positions[p["symbol"].replace("USDT", "")][
-            "netAsset"
-        ]
+    positions = []
+    for p in res[0]:
+        if p["symbol"] in SYMBOLS:
+            p["marginPositionAmt"] = margin_positions[p["symbol"].replace("USDT", "")][
+                "netAsset"
+            ]
+            positions.append(p)
 
-    return account_info
+    return sorted(positions, key=lambda p: SYMBOLS.index(p["symbol"]))
+
+
+@app.get("/wallet")
+async def get_account():
+    client = await async_client()
+
+    balances = {a: {} for a in ["USDT", "BUSD", "BNB"]}
+    res = await asyncio.gather(client.futures_account(), client.get_margin_account())
+
+    for futures_asset in res[0]["assets"]:
+        if futures_asset["asset"] in balances:
+            balances[futures_asset["asset"]]["futuresPositionAmt"] = futures_asset[
+                "availableBalance"
+            ]
+
+    for margin_asset in res[1]["userAssets"]:
+        if margin_asset["asset"] in balances:
+            balances[margin_asset["asset"]]["marginPositionAmt"] = margin_asset[
+                "netAsset"
+            ]
+            balances[margin_asset["asset"]]["totalPositionAmt"] = str(
+                float(balances[margin_asset["asset"]]["futuresPositionAmt"])
+                + float(balances[margin_asset["asset"]]["marginPositionAmt"])
+            )
+
+    assets = [{"asset": b, **balances[b]} for b in balances]
+
+    return assets
 
 
 @app.get("/income-history")
@@ -154,10 +200,19 @@ async def get_trades():
     return df.to_dict(orient="records")
 
 
+@app.get("/trades/margin/{symbol}")
+async def get_trades_margin(symbol: str):
+    client = await async_client()
+
+    res = await client.get_margin_trades(symbol=symbol)
+
+    return res
+
+
 class Position(BaseModel):
     symbol: str
     futuresQty: float
-    spotQty: float
+    marginQty: float
 
 
 @app.post("/close-positions")
@@ -171,19 +226,21 @@ async def get_trades(position: Position):
         "type": "MARKET",
     }
 
-    spot_params = {
+    margin_params = {
         "symbol": position.symbol,
-        "quantity": abs(position.spotQty),
-        "side": "BUY" if position.spotQty < 0 else "SELL",
+        "quantity": round(abs(position.marginQty), 6),
+        "side": "BUY" if position.marginQty < 0 else "SELL",
         "type": "MARKET",
     }
 
     res = await asyncio.gather(
-        client.create_margin_order(**spot_params),
-        client.futures_create_order(**futures_params),
+        client.create_margin_order(**margin_params),
+        # client.futures_create_order(**futures_params),
     )
 
     return res
+
+    # return margin_params
 
 
 @app.get("/klines/{market}/{symbol}")
@@ -364,43 +421,6 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
     )
 
 
-@app.websocket("/market-stream/futures")
-async def get_market_stream_futures(websocket: WebSocket):
-    await websocket.accept()
-
-    client = await async_client()
-    bm = BinanceSocketManager(client)
-
-    async with bm._get_futures_socket(
-        path=f"!markPrice@arr@1s", futures_type=enums.FuturesType.USD_M
-    ) as stream:
-        try:
-            while websocket.client_state == WebSocketState.CONNECTED:
-                res = await stream.recv()
-                res = [r for r in res["data"] if r["s"] in SYMBOLS]
-                await websocket.send_json(res)
-        except ConnectionClosedOK:
-            print("connection to /market-stream/futures closed")
-
-
-@app.websocket("/market-stream/spot")
-async def get_market_stream_spot(websocket: WebSocket):
-    await websocket.accept()
-
-    client = await async_client()
-    bm = BinanceSocketManager(client)
-
-    [f"{s.lower()}@ticker" for s in SYMBOLS]
-
-    async with bm.multiplex_socket([f"{s.lower()}@ticker" for s in SYMBOLS]) as stream:
-        try:
-            while websocket.client_state == WebSocketState.CONNECTED:
-                res = await stream.recv()
-                await websocket.send_json(res)
-        except ConnectionClosedOK:
-            print("connection to /market-stream/spot closed")
-
-
 @app.websocket("/market-stream")
 async def get_market_stream(websocket: WebSocket):
     """ """
@@ -417,6 +437,7 @@ async def get_market_stream(websocket: WebSocket):
             while websocket.client_state == WebSocketState.CONNECTED:
                 res = await stream.recv()
                 res = [r for r in res["data"] if r["s"] in SYMBOLS]
+                res = sorted(res, key=lambda r: SYMBOLS.index(r["s"]))
 
                 if len(spot_prices[0]) == len(SYMBOLS):
                     for r in res:
