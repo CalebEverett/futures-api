@@ -213,6 +213,7 @@ class Position(BaseModel):
     symbol: str
     futuresQty: float
     marginQty: float
+    leverage: int
 
 
 @app.post("/close-positions")
@@ -240,7 +241,36 @@ async def get_trades(position: Position):
 
     return res
 
-    # return margin_params
+
+@app.post("/open-positions")
+async def get_open_trades(position: Position):
+    client = await async_client()
+
+    futures_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.futuresQty),
+        "side": "BUY" if position.futuresQty > 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    margin_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.marginQty),
+        "side": "BUY" if position.marginQty > 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    leverage_params = {"symbol": position.symbol, "leverage": position.leverage}
+    print(leverage_params)
+
+    res = await client.futures_change_leverage(**leverage_params)
+
+    # res = await asyncio.gather(
+    #     client.create_margin_order(**margin_params),
+    #     client.futures_create_order(**futures_params),
+    # )
+
+    return res
 
 
 @app.get("/klines/{market}/{symbol}")
