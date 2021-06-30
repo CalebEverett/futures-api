@@ -23,7 +23,6 @@ SYMBOLS = [
     "ETHUSDT",
     "DOGEUSDT",
     "XRPUSDT",
-    "BNBUSDT",
     "ADAUSDT",
     "DOTUSDT",
     "MATICUSDT",
@@ -229,14 +228,14 @@ async def get_trades(position: Position):
 
     margin_params = {
         "symbol": position.symbol,
-        "quantity": round(abs(position.marginQty), 6),
+        "quantity": abs(position.marginQty),
         "side": "BUY" if position.marginQty < 0 else "SELL",
         "type": "MARKET",
     }
 
     res = await asyncio.gather(
         client.create_margin_order(**margin_params),
-        # client.futures_create_order(**futures_params),
+        client.futures_create_order(**futures_params),
     )
 
     return res
@@ -261,14 +260,15 @@ async def get_open_trades(position: Position):
     }
 
     leverage_params = {"symbol": position.symbol, "leverage": position.leverage}
-    print(leverage_params)
 
-    res = await client.futures_change_leverage(**leverage_params)
+    leverage_res = await client.futures_change_leverage(**leverage_params)
 
-    # res = await asyncio.gather(
-    #     client.create_margin_order(**margin_params),
-    #     client.futures_create_order(**futures_params),
-    # )
+    res = await asyncio.gather(
+        client.create_margin_order(**margin_params),
+        client.futures_create_order(**futures_params),
+    )
+
+    res.append(leverage_res)
 
     return res
 
@@ -294,7 +294,7 @@ async def get_kline_history(market: marketName, symbol: str):
     return processed_klines
 
 
-@app.get("/funding/{symbol}/")
+@app.get("/funding/{symbol}")
 async def get_spread_history(
     symbol: str, start_time: str = None, end_time: str = None, limit: int = 1000
 ):
@@ -353,17 +353,21 @@ async def get_klines_stream_futures(websocket: WebSocket, symbol: str):
 
     client = await async_client()
     bm = BinanceSocketManager(client)
-    cm = bm._get_futures_socket(
+    stream = bm._get_futures_socket(
         path=f"{symbol.lower()}@kline_1m", futures_type=enums.FuturesType.USD_M
     )
 
-    async with cm as stream:
-        while True:
+    await stream.__aenter__()
+    while True:
+        try:
             res = await stream.recv()
             kline = res["data"]["k"]
             processed_kline = {key: kline[key[0]] for key in candle_keys}
             processed_kline["time"] /= 1000
             await websocket.send_json(processed_kline)
+        except:
+            print(f"INFO: /klines/futures/{symbol} stream closed.")
+            await stream.__aexit__(None, None, None)
 
 
 @app.websocket("/klines/spot/{symbol}")
@@ -372,15 +376,20 @@ async def get_klines_stream_spot(websocket: WebSocket, symbol: str):
 
     client = await async_client()
     bm = BinanceSocketManager(client)
-    cm = bm.kline_socket(symbol)
 
-    async with cm as stream:
-        while True:
+    stream = bm.kline_socket(symbol)
+    await stream.__aenter__()
+
+    while True:
+        try:
             res = await stream.recv()
             kline = res["k"]
             processed_kline = {key: kline[key[0]] for key in candle_keys}
             processed_kline["time"] /= 1000
             await websocket.send_json(processed_kline)
+        except:
+            print(f"INFO:  /klines/spot/{symbol} stream closed.")
+            await stream.__aexit__(None, None, None)
 
 
 @app.websocket("/spread/{symbol}")
@@ -401,11 +410,14 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
 
     async def futures_kline_listener(client):
         bm = BinanceSocketManager(client)
-        async with bm._get_futures_socket(
+        stream = bm._get_futures_socket(
             path=f"{symbol.lower()}@kline_1m", futures_type=enums.FuturesType.USD_M
-        ) as stream:
-            old_processed_kline = None
-            while True:
+        )
+        old_processed_kline = None
+        await stream.__aenter__()
+
+        while True:
+            try:
                 res = await stream.recv()
                 kline_futures = res["data"]["k"]
 
@@ -438,13 +450,22 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
                     old_processed_kline = processed_kline
 
                     await websocket.send_json(processed_kline)
+            except:
+                print(f"INFO:  futures_kline_listener stream closed.")
+                await stream.__aexit__(None, None, None)
 
     async def spot_kline_listener(client):
         bm = BinanceSocketManager(client)
-        async with bm.kline_socket(symbol) as stream:
-            while True:
+        stream = bm.kline_socket(symbol)
+        await stream.__aenter__()
+
+        while True:
+            try:
                 res = await stream.recv()
                 kline_spots[0] = res["k"]
+            except:
+                print(f"INFO:  spot_kline_listener stream closed.")
+                await stream.__aexit__(None, None, None)
 
     res = await asyncio.gather(
         futures_kline_listener(client), spot_kline_listener(client)
@@ -453,7 +474,6 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
 
 @app.websocket("/market-stream")
 async def get_market_stream(websocket: WebSocket):
-    """ """
 
     await websocket.accept()
     client = await async_client()
@@ -461,10 +481,13 @@ async def get_market_stream(websocket: WebSocket):
 
     async def futures_market_stream(client):
         bm = BinanceSocketManager(client)
-        async with bm._get_futures_socket(
+        stream = bm._get_futures_socket(
             path=f"!markPrice@arr@1s", futures_type=enums.FuturesType.USD_M
-        ) as stream:
-            while websocket.client_state == WebSocketState.CONNECTED:
+        )
+        await stream.__aenter__()
+
+        while True:
+            try:
                 res = await stream.recv()
                 res = [r for r in res["data"] if r["s"] in SYMBOLS]
                 res = sorted(res, key=lambda r: SYMBOLS.index(r["s"]))
@@ -474,29 +497,59 @@ async def get_market_stream(websocket: WebSocket):
                         r["spotPrice"] = spot_prices[0][r["s"]]
                         r["spread"] = float(r["p"]) / float(r["spotPrice"]) - 1
                     await websocket.send_json(res)
+            except:
+                print(f"INFO:  futures_market stream closed.")
+                await stream.__aexit__(None, None, None)
 
     async def spot_market_stream(client):
         bm = BinanceSocketManager(client)
-        async with bm.multiplex_socket(
-            [f"{s.lower()}@ticker" for s in SYMBOLS]
-        ) as stream:
-            while True:
+        stream = bm.multiplex_socket([f"{s.lower()}@ticker" for s in SYMBOLS])
+        await stream.__aenter__()
+
+        while True:
+            try:
                 res = await stream.recv()
                 symbol = res["stream"].split("@")[0].upper()
                 spot_prices[0][symbol] = res["data"]["c"]
+            except:
+                print(f"INFO:  spot_market stream closed.")
+                await stream.__aexit__(None, None, None)
 
     res = await asyncio.gather(
         futures_market_stream(client), spot_market_stream(client)
     )
 
 
-@app.websocket("/user/spot")
-async def get_user_stream_spot(websocket: WebSocket):
-    await websocket.accept()
+@app.websocket("/user-stream")
+async def get_user_stream(websocket: WebSocket):
 
-    try:
-        while websocket.client_state == WebSocketState.CONNECTED:
-            await asyncio.sleep(1)
-            await websocket.send_json("yo")
-    except ConnectionClosedOK:
-        print("connection to /user/spot closed")
+    await websocket.accept()
+    client = await async_client()
+
+    async def futures_user_stream(client):
+        bm = BinanceSocketManager(client)
+        stream = bm.futures_socket()
+        await stream.__aenter__()
+
+        while True:
+            try:
+                res = await stream.recv()
+                await websocket.send_json(res)
+            except:
+                print(f"INFO:  futures_socket stream closed.")
+                await stream.__aexit__(None, None, None)
+
+    async def margin_user_stream(client):
+        bm = BinanceSocketManager(client)
+        stream = bm.margin_socket()
+        await stream.__aenter__()
+
+        while True:
+            try:
+                res = await stream.recv()
+                await websocket.send_json(res)
+            except:
+                print(f"INFO:  margin_socket stream closed.")
+                await stream.__aexit__(None, None, None)
+
+    res = await asyncio.gather(futures_user_stream(client), margin_user_stream(client))

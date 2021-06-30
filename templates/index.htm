@@ -1,16 +1,18 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <title>Real time streaming</title>
-  </head>
 
-  <body>
-    <div id="chart"></div>
-    <script>
-      const ws = new WebSocket("ws://localhost:8000/market-stream/spot");
-      ws.onmessage = function (event) {
-        console.log(event.data);
-      };
-    </script>
-  </body>
+<head>
+  <title>Real time streaming</title>
+</head>
+
+<body>
+  <div id="chart"></div>
+  <script>
+    const ws = new WebSocket("ws://localhost:8000/user-stream");
+    ws.onmessage = function (event) {
+      console.log(event.data);
+    };
+  </script>
+</body>
+
 </html>
