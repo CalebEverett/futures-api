@@ -190,27 +190,100 @@ async def get_income_history():
 async def get_trades():
     client = await async_client()
 
-    # df = pd.DataFrame(res).astype({"qty": float}).sort_values(["symbol", "time"])
-    # df.qty = df.qty * ((df.side == "SELL") * -1 + (df.side == "BUY"))
-    # df["qty_cumsum"] = df.groupby(["symbol"]).cumsum().qty
-    # df.to_dict(orient="records")
+    min_times = {
+        "BTCUSDT": 1625068183733,
+        "ETHUSDT": 1625085609700,
+        "DOTUSDT": 1625085913036,
+        "MATICUSDT": 1625159906000,
+    }
 
-    dtypes = {"qty": float, "price": float}
+    float_fields_m = ["qty", "price", "commission"]
+    float_fields_f = float_fields_m + ["quoteQty", "realizedPnl"]
+    columns = [
+        "symbol",
+        "time",
+        "orderId",
+        "side",
+        "qty",
+        "price",
+        "quoteQty",
+        "commission",
+        "realizedPnl",
+    ]
 
     res_futures = await client.futures_account_trades()
-    df_f = pd.DataFrame(res_futures).astype(dtypes).sort_values(["symbol", "time"])
+    df_f = (
+        pd.DataFrame(res_futures)
+        .astype({f: float for f in float_fields_f})
+        .sort_values(["symbol", "time"])
+    )
+    df_f = df_f.groupby("orderId").filter(
+        lambda r: r["time"].min() > min_times[r["symbol"].max()]
+    )
+    df_f = (
+        df_f.groupby(["symbol", "orderId"])
+        .agg(
+            {
+                "side": "max",
+                "qty": "sum",
+                "quoteQty": "sum",
+                "commission": "sum",
+                "time": "min",
+                "realizedPnl": "sum",
+            }
+        )
+        .reset_index()
+    )
+    df_f["price"] = df_f.quoteQty / df_f.qty
+    df_f = df_f[columns]
+    df_f.columns = [
+        f"{c}Future" if c not in ["symbol", "time"] else c for c in df_f.columns
+    ]
 
     res_margin = await asyncio.gather(
         *[client.get_margin_trades(symbol=symbol) for symbol in SYMBOLS],
     )
     df_m = (
-        pd.DataFrame(sum(res_margin, [])).astype(dtypes).sort_values(["symbol", "time"])
+        pd.DataFrame(sum(res_margin, []))
+        .astype({f: float for f in float_fields_m})
+        .sort_values(["symbol", "time"])
     )
 
-    return {
-        "futures": df_f.to_dict(orient="records"),
-        "margin": df_m.to_dict(orient="records"),
-    }
+    df_m = df_m.groupby("orderId").filter(
+        lambda r: r["time"].min() > min_times[r["symbol"].max()]
+    )
+    df_m["quoteQty"] = df_m.qty * df_m.price
+    df_m["side"] = df_m.isBuyer.map({True: "BUY", False: "SELL"})
+    df_m = (
+        df_m.groupby(["symbol", "orderId"])
+        .agg(
+            {
+                "side": "max",
+                "qty": "sum",
+                "quoteQty": "sum",
+                "commission": "sum",
+                "time": "min",
+            }
+        )
+        .reset_index()
+    )
+    df_m["price"] = df_m.quoteQty / df_m.qty
+    df_m["commission"] = df_m.quoteQty * 0.00075
+    df_m["realizedPnl"] = (
+        (df_m.quoteQty - df_m.groupby(["symbol"]).shift()["quoteQty"])
+        * (df_m.side == "SELL")
+    ).fillna(0)
+
+    df_m = df_m[columns]
+    df_m.columns = [
+        f"{c}Margin" if c not in ["symbol", "time"] else c for c in df_m.columns
+    ]
+
+    df = pd.concat([df_f, df_m[[c for c in df_m.columns if "Margin" in c]]], axis=1)
+    df["commissionTotal"] = df.commissionMargin + df.commissionFuture
+    df["realizedPnlTotal"] = df.realizedPnlMargin + df.realizedPnlFuture
+
+    return df.to_dict(orient="records")
 
 
 @app.get("/trades/margin/{symbol}")
