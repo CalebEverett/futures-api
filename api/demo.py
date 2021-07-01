@@ -190,13 +190,27 @@ async def get_income_history():
 async def get_trades():
     client = await async_client()
 
-    res = await client.futures_account_trades()
+    # df = pd.DataFrame(res).astype({"qty": float}).sort_values(["symbol", "time"])
+    # df.qty = df.qty * ((df.side == "SELL") * -1 + (df.side == "BUY"))
+    # df["qty_cumsum"] = df.groupby(["symbol"]).cumsum().qty
+    # df.to_dict(orient="records")
 
-    df = pd.DataFrame(res).astype({"qty": float}).sort_values(["symbol", "time"])
-    df.qty = df.qty * ((df.side == "SELL") * -1 + (df.side == "BUY"))
-    df["qty_cumsum"] = df.groupby(["symbol"]).cumsum().qty
+    dtypes = {"qty": float, "price": float}
 
-    return df.to_dict(orient="records")
+    res_futures = await client.futures_account_trades()
+    df_f = pd.DataFrame(res_futures).astype(dtypes).sort_values(["symbol", "time"])
+
+    res_margin = await asyncio.gather(
+        *[client.get_margin_trades(symbol=symbol) for symbol in SYMBOLS],
+    )
+    df_m = (
+        pd.DataFrame(sum(res_margin, [])).astype(dtypes).sort_values(["symbol", "time"])
+    )
+
+    return {
+        "futures": df_f.to_dict(orient="records"),
+        "margin": df_m.to_dict(orient="records"),
+    }
 
 
 @app.get("/trades/margin/{symbol}")
