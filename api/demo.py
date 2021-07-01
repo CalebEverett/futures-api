@@ -282,8 +282,9 @@ async def get_trades():
     df = pd.concat([df_f, df_m[[c for c in df_m.columns if "Margin" in c]]], axis=1)
     df["commissionTotal"] = df.commissionMargin + df.commissionFuture
     df["realizedPnlTotal"] = df.realizedPnlMargin + df.realizedPnlFuture
+    df.index = df.index.rename("id")
 
-    return df.to_dict(orient="records")
+    return df.reset_index().to_dict(orient="records")
 
 
 @app.get("/trades/margin/{symbol}")
