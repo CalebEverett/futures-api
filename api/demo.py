@@ -144,6 +144,10 @@ async def get_account():
             p["marginPositionAmt"] = margin_positions[p["symbol"].replace("USDT", "")][
                 "netAsset"
             ]
+            p["marginEntryPrice"] = 0
+            p["notional"] = 0
+            p["marginNotional"] = 0
+            p["margin"] = 0
             positions.append(p)
 
     return sorted(positions, key=lambda p: SYMBOLS.index(p["symbol"]))
@@ -186,16 +190,25 @@ async def get_income_history():
     return res
 
 
+class recordsForm(str, Enum):
+    detail = "detail"
+    last = "last"
+    summary = "summary"
+
+
 @app.get("/trades")
-async def get_trades():
+async def get_trades(form: recordsForm = recordsForm.detail):
     client = await async_client()
 
     min_times = {
         "BTCUSDT": 1625068183733,
         "ETHUSDT": 1625085609700,
         "DOTUSDT": 1625085913036,
-        "MATICUSDT": 1625159906000,
     }
+
+    for s in SYMBOLS:
+        if s not in min_times:
+            min_times[s] = 1625054400000
 
     float_fields_m = ["qty", "price", "commission"]
     float_fields_f = float_fields_m + ["quoteQty", "realizedPnl"]
@@ -284,7 +297,16 @@ async def get_trades():
     df["realizedPnlTotal"] = df.realizedPnlMargin + df.realizedPnlFuture
     df.index = df.index.rename("id")
 
-    return df.reset_index().to_dict(orient="records")
+    if form == recordsForm.detail:
+        return df.reset_index().to_dict(orient="records")
+    elif form == recordsForm.last:
+        return (
+            df.reset_index()
+            .groupby("symbol")
+            .last()
+            .reset_index()
+            .to_dict(orient="records")
+        )
 
 
 @app.get("/trades/margin/{symbol}")
