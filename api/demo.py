@@ -208,7 +208,7 @@ async def get_trades(form: recordsForm = recordsForm.detail):
 
     for s in SYMBOLS:
         if s not in min_times:
-            min_times[s] = 1625054400000
+            min_times[s] = 1625094000000
 
     float_fields_m = ["qty", "price", "commission"]
     float_fields_f = float_fields_m + ["quoteQty", "realizedPnl"]
@@ -298,7 +298,11 @@ async def get_trades(form: recordsForm = recordsForm.detail):
     df.index = df.index.rename("id")
 
     if form == recordsForm.detail:
-        return df.reset_index().to_dict(orient="records")
+        return (
+            df.reset_index()
+            .sort_values("time", ascending=False)
+            .to_dict(orient="records")
+        )
     elif form == recordsForm.last:
         return (
             df.reset_index()
@@ -307,6 +311,21 @@ async def get_trades(form: recordsForm = recordsForm.detail):
             .reset_index()
             .to_dict(orient="records")
         )
+    elif form == recordsForm.summary:
+        res_income = await client.futures_income_history()
+        df_i = pd.DataFrame(
+            [i for i in res_income if i["incomeType"] == "FUNDING_FEE"]
+        ).astype({"income": float})
+
+        df = df.groupby("symbol").sum()[["commissionTotal", "realizedPnlTotal"]]
+        df.columns = ["commission", "realizedPnl"]
+        df["fundingFee"] = df_i.groupby("symbol").sum()["income"]
+        df.commission = df.commission * -1
+        df["Total"] = df.sum(axis=1)
+        df = df.T
+        df["Total"] = df.sum(axis=1)
+        df.index = df.index.rename("component")
+        return df.reset_index().fillna(0).to_dict(orient="records")
 
 
 @app.get("/trades/margin/{symbol}")
@@ -383,16 +402,37 @@ async def get_open_trades(position: Position):
     return res
 
 
+class Interval(str, Enum):
+    KLINE_INTERVAL_12HOUR = "12h"
+    KLINE_INTERVAL_15MINUTE = "15m"
+    KLINE_INTERVAL_1DAY = "1d"
+    KLINE_INTERVAL_1HOUR = "1h"
+    KLINE_INTERVAL_1MINUTE = "1m"
+    KLINE_INTERVAL_1MONTH = "1M"
+    KLINE_INTERVAL_1WEEK = "1w"
+    KLINE_INTERVAL_2HOUR = "2h"
+    KLINE_INTERVAL_30MINUTE = "30m"
+    KLINE_INTERVAL_3DAY = "3d"
+    KLINE_INTERVAL_3MINUTE = "3m"
+    KLINE_INTERVAL_4HOUR = "4h"
+    KLINE_INTERVAL_5MINUTE = "5m"
+    KLINE_INTERVAL_6HOUR = "6h"
+    KLINE_INTERVAL_8HOUR = "8h"
+
+
 @app.get("/klines/{market}/{symbol}")
-async def get_kline_history(market: marketName, symbol: str):
+async def get_kline_history(
+    market: marketName, symbol: str, interval: Interval = "1m", limit: int = 1000
+):
     client = await async_client()
+    print(interval)
 
     methods = {
         marketName.futures: client.futures_klines,
         marketName.spot: client.get_klines,
     }
 
-    res = await methods[market](symbol=symbol, interval=client.KLINE_INTERVAL_1MINUTE)
+    res = await methods[market](symbol=symbol, interval=interval.value, limit=limit)
 
     processed_klines = [
         {key: value for key, value in zip(candle_keys, kline)} for kline in res
@@ -423,12 +463,12 @@ async def get_spread_history(
 
 
 @app.get("/spread/{symbol}")
-async def get_spread_history(symbol: str):
+async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int = 1000):
     client = await async_client()
 
     methods = [client.futures_klines, client.get_klines]
     methods = [
-        method(symbol=symbol, interval=client.KLINE_INTERVAL_1MINUTE)
+        method(symbol=symbol, interval=interval.value, limit=limit)
         for method in methods
     ]
 
@@ -438,7 +478,12 @@ async def get_spread_history(symbol: str):
         for r in res
     ]
 
-    assert all(dfs[0].index == dfs[1].index)
+    print([len(df) for df in dfs])
+    max_len = min([len(df) for df in dfs])
+
+    dfs = [df.iloc[:max_len] for df in dfs]
+
+    # assert all(dfs[0].index == dfs[1].index)
 
     df_processed = pd.DataFrame({"time": dfs[0].index.values}).set_index("time")
 
@@ -458,13 +503,16 @@ async def get_spread_history(symbol: str):
 
 
 @app.websocket("/klines/futures/{symbol}")
-async def get_klines_stream_futures(websocket: WebSocket, symbol: str):
+async def get_klines_stream_futures(
+    websocket: WebSocket, symbol: str, interval: Interval = "1m"
+):
     await websocket.accept()
 
     client = await async_client()
     bm = BinanceSocketManager(client)
     stream = bm._get_futures_socket(
-        path=f"{symbol.lower()}@kline_1m", futures_type=enums.FuturesType.USD_M
+        path=f"{symbol.lower()}@kline_{interval.value}",
+        futures_type=enums.FuturesType.USD_M,
     )
 
     await stream.__aenter__()
@@ -481,13 +529,15 @@ async def get_klines_stream_futures(websocket: WebSocket, symbol: str):
 
 
 @app.websocket("/klines/spot/{symbol}")
-async def get_klines_stream_spot(websocket: WebSocket, symbol: str):
+async def get_klines_stream_spot(
+    websocket: WebSocket, symbol: str, interval: Interval = "1m"
+):
     await websocket.accept()
 
     client = await async_client()
     bm = BinanceSocketManager(client)
 
-    stream = bm.kline_socket(symbol)
+    stream = bm.kline_socket(symbol, interval=interval.value)
     await stream.__aenter__()
 
     while True:

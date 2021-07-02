@@ -8,7 +8,7 @@
 <body>
   <div id="chart"></div>
   <script>
-    const ws = new WebSocket("ws://localhost:8000/user-stream");
+    const ws = new WebSocket("ws://localhost:8000/klines/futures/BTCUSDT?interval=1d");
     ws.onmessage = function (event) {
       console.log(event.data);
     };
