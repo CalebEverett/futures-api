@@ -445,7 +445,7 @@ async def get_kline_history(
 
 
 @app.get("/funding/{symbol}")
-async def get_spread_history(
+async def get_funding_history(
     symbol: str, start_time: str = None, end_time: str = None, limit: int = 1000
 ):
     client = await async_client()
@@ -473,17 +473,14 @@ async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int 
     ]
 
     res = await asyncio.gather(*methods)
-    dfs = [
-        pd.DataFrame(r, columns=kline_columns, dtype=float).set_index("time")
-        for r in res
-    ]
+    dfs = [pd.DataFrame(r, columns=kline_columns, dtype=float) for r in res]
 
     print([len(df) for df in dfs])
     max_len = min([len(df) for df in dfs])
 
-    dfs = [df.iloc[:max_len] for df in dfs]
+    dfs = [df.iloc[-max_len:].set_index("time") for df in dfs]
 
-    # assert all(dfs[0].index == dfs[1].index)
+    assert all(dfs[0].index == dfs[1].index)
 
     df_processed = pd.DataFrame({"time": dfs[0].index.values}).set_index("time")
 
