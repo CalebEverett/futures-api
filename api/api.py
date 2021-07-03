@@ -8,7 +8,7 @@ from typing import Dict, List
 from binance import AsyncClient, BinanceSocketManager, enums
 from fastapi import FastAPI
 from fastapi import Request
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -76,7 +76,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 candle_keys = ["time", "open", "high", "low", "close", "volume"]
@@ -104,11 +103,24 @@ class marketName(str, Enum):
 
 @app.get("/")
 def read_root(request: Request):
+    """
+    This is here to load the simple index.html template that logs results from the
+    endpoint entered there to the console for debugging.
+    """
     return templates.TemplateResponse("index.htm", {"request": request})
 
 
 @app.get("/exchange")
-async def get_exhange_info():
+async def get_exchange_info():
+    """
+    Returns information about assets that can be traded on the exchange:
+
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#exchange-information)
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#exchange-information)
+
+    TODO: include precision and lot size specifications in app TradeAction component.
+    """
+
     client = await async_client()
 
     async def get_futures_exchange_info():
@@ -126,6 +138,9 @@ async def get_exhange_info():
 
 @app.get("/account")
 async def get_account():
+    """
+    Returns balances of open futures and margin positions.
+    """
     client = await async_client()
 
     res = await asyncio.gather(
@@ -155,6 +170,9 @@ async def get_account():
 
 @app.get("/wallet")
 async def get_account():
+    """
+    Returns balance of assets in futures and margin wallets.
+    """
     client = await async_client()
 
     balances = {a: {} for a in ["USDT", "BUSD", "BNB"]}
