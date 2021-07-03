@@ -420,6 +420,43 @@ class Interval(str, Enum):
     KLINE_INTERVAL_8HOUR = "8h"
 
 
+@app.get("/klines/spread/{symbol}")
+async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int = 1000):
+    client = await async_client()
+
+    methods = [client.futures_klines, client.get_klines]
+    methods = [
+        method(symbol=symbol, interval=interval.value, limit=limit)
+        for method in methods
+    ]
+
+    res = await asyncio.gather(*methods)
+    dfs = [pd.DataFrame(r, columns=kline_columns, dtype=float) for r in res]
+
+    print([len(df) for df in dfs])
+    max_len = min([len(df) for df in dfs])
+
+    dfs = [df.iloc[-max_len:].set_index("time") for df in dfs]
+
+    assert all(dfs[0].index == dfs[1].index)
+
+    df_processed = pd.DataFrame({"time": dfs[0].index.values}).set_index("time")
+
+    for key in ["open", "close"]:
+        df_processed[key] = dfs[0][key] / dfs[1][key] - 1
+
+    df_processed["high"] = df_processed[["open", "close"]].max(axis=1)
+    df_processed["low"] = df_processed[["open", "close"]].min(axis=1)
+
+    df_processed["volume"] = pd.concat([dfs[i]["volume"] for i in [0, 1]], axis=1).min(
+        axis=1
+    )
+
+    df_processed.index /= 1000
+
+    return df_processed.reset_index().to_dict(orient="records")
+
+
 @app.get("/klines/{market}/{symbol}")
 async def get_kline_history(
     market: marketName, symbol: str, interval: Interval = "1m", limit: int = 1000
@@ -460,43 +497,6 @@ async def get_funding_history(
     ]
 
     return processed_rates
-
-
-@app.get("/spread/{symbol}")
-async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int = 1000):
-    client = await async_client()
-
-    methods = [client.futures_klines, client.get_klines]
-    methods = [
-        method(symbol=symbol, interval=interval.value, limit=limit)
-        for method in methods
-    ]
-
-    res = await asyncio.gather(*methods)
-    dfs = [pd.DataFrame(r, columns=kline_columns, dtype=float) for r in res]
-
-    print([len(df) for df in dfs])
-    max_len = min([len(df) for df in dfs])
-
-    dfs = [df.iloc[-max_len:].set_index("time") for df in dfs]
-
-    assert all(dfs[0].index == dfs[1].index)
-
-    df_processed = pd.DataFrame({"time": dfs[0].index.values}).set_index("time")
-
-    for key in ["open", "close"]:
-        df_processed[key] = dfs[0][key] / dfs[1][key] - 1
-
-    df_processed["high"] = df_processed[["open", "close"]].max(axis=1)
-    df_processed["low"] = df_processed[["open", "close"]].min(axis=1)
-
-    df_processed["volume"] = pd.concat([dfs[i]["volume"] for i in [0, 1]], axis=1).min(
-        axis=1
-    )
-
-    df_processed.index /= 1000
-
-    return df_processed.reset_index().to_dict(orient="records")
 
 
 @app.websocket("/klines/futures/{symbol}")
@@ -549,7 +549,7 @@ async def get_klines_stream_spot(
             await stream.__aexit__(None, None, None)
 
 
-@app.websocket("/spread/{symbol}")
+@app.websocket("/klines/spread/{symbol}")
 async def get_spread_stream(websocket: WebSocket, symbol: str):
     """
     This effectively combines the futures and spot websocket streams from
