@@ -25,6 +25,7 @@ jobs:
       run: |
         pipenv run pytest
     - name: Convert notebook
+      if: false
       run: |
         pipenv run jupyter nbconvert futures_strategy.ipynb --to html --output html/index.html
     - name: Deploy html notebook to gh-pages

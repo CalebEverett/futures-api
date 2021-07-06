@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 import os
-from typing import Dict, List
 
 from binance import AsyncClient, BinanceSocketManager, enums
 from fastapi import FastAPI
@@ -11,24 +10,25 @@ from fastapi import Request
 from fastapi import WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pydantic import BaseModel
-from starlette.websockets import WebSocketState
-from websockets.exceptions import ConnectionClosedOK
+
+from fastapi.openapi.utils import get_openapi
 
 
-SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "DOGEUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "DOTUSDT",
-    "MATICUSDT",
-    "EOSUSDT",
-    "LINKUSDT",
-]
+class Symbol(str, Enum):
+    BTCUSDT = "BTCUSDT"
+    ETHUSDT = "ETHUSDT"
+    DOGEUSDT = "DOGEUSDT"
+    XRPUSDT = "XRPUSDT"
+    ADAUSDT = "ADAUSDT"
+    DOTUSDT = "DOTUSDT"
+    MATICUSDT = "MATICUSDT"
+    EOSUSDT = "EOSUSDT"
+    LINKUSDT = "LINKUSDT"
+
+
+SYMBOLS = [item.value for item in Symbol]
 
 
 def get_utc_timestamp(iso_format_datetime: str):
@@ -66,7 +66,11 @@ origins = [
     "http://localhost:3000",
 ]
 
-app = FastAPI()
+app = FastAPI(
+    title="Futures Strategy API",
+    description="REST endpoints for Futures Strategy application.",
+    version="0.1.1",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +83,7 @@ app.add_middleware(
 templates = Jinja2Templates(directory="templates")
 
 candle_keys = ["time", "open", "high", "low", "close", "volume"]
+
 kline_columns = candle_keys + [
     "close_time",
     "quote_volume",
@@ -110,28 +115,36 @@ def read_root(request: Request):
     return templates.TemplateResponse("index.htm", {"request": request})
 
 
+# **********************************************************
+# REST Endpoints
+# **********************************************************
+
+
 @app.get("/exchange")
 async def get_exchange_info():
     """
     Returns information about assets that can be traded on the exchange:
 
-    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#exchange-information)
     * [Futures](https://binance-docs.github.io/apidocs/futures/en/#exchange-information)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#exchange-information)
 
-    TODO: include precision and lot size specifications in app TradeAction component.
+    TODO: Include precision and lot size specifications in app TradeAction component.
+
     """
 
     client = await async_client()
 
     async def get_futures_exchange_info():
         symbol_info = await client.futures_exchange_info()
-        return [s for s in symbol_info["symbols"] if s["symbol"] == SYMBOLS[0]]
+        return [s for s in symbol_info["symbols"] if s["symbol"] in SYMBOLS]
 
     async def get_exchange_info():
         symbol_info = await client.get_exchange_info()
-        return [s for s in symbol_info["symbols"] if s["symbol"] == SYMBOLS[0]]
+        return [s for s in symbol_info["symbols"] if s["symbol"] in SYMBOLS]
 
     res = await asyncio.gather(get_futures_exchange_info(), get_exchange_info())
+
+    await client.close_connection()
 
     return res
 
@@ -139,13 +152,42 @@ async def get_exchange_info():
 @app.get("/account")
 async def get_account():
     """
-    Returns balances of open futures and margin positions.
+    Returns balances of open futures and margin positions matched together as a single row with
+    the following keys to populate PositionTable component:
+
+    * symbol
+    * positionAmt
+    * entryPrice
+    * markPrice
+    * unRealizedProfit
+    * liquidationPrice
+    * leverage
+    * maxNotionalValue
+    * marginType
+    * isolatedMargin
+    * isAutoAddMargin
+    * positionSide
+    * notional
+    * isolatedWallet
+    * updateTime
+    * marginPositionAmt
+    * marginEntryPrice
+    * marginNotional
+    * margin
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#get-position-margin-change-history-trade)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#query-cross-margin-account-details-user_data)
+
     """
     client = await async_client()
 
     res = await asyncio.gather(
         client.futures_position_information(), client.get_margin_account()
     )
+
+    await client.close_connection()
 
     margin_positions = {
         p["asset"]: {"netAsset": p["netAsset"]}
@@ -171,12 +213,26 @@ async def get_account():
 @app.get("/wallet")
 async def get_account():
     """
-    Returns balance of assets in futures and margin wallets.
+    Returns balance of assets in futures and margin wallets with the following keys to
+    populate WalletTable component:
+
+    * asset
+    * futuresPositionAmt
+    * marginPositionAmt
+    * totalPositionAmt
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#account-information-v2-user_data)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#query-cross-margin-account-details-user_data)
+
     """
     client = await async_client()
 
     balances = {a: {} for a in ["USDT", "BUSD", "BNB"]}
     res = await asyncio.gather(client.futures_account(), client.get_margin_account())
+
+    await client.close_connection()
 
     for futures_asset in res[0]["assets"]:
         if futures_asset["asset"] in balances:
@@ -201,9 +257,15 @@ async def get_account():
 
 @app.get("/income-history")
 async def get_income_history():
+    """
+    Returns income history, including funding rate history.
+
+    """
     client = await async_client()
 
     res = await client.futures_income_history()
+
+    await client.close_connection()
 
     return res
 
@@ -216,6 +278,33 @@ class recordsForm(str, Enum):
 
 @app.get("/trades")
 async def get_trades(form: recordsForm = recordsForm.detail):
+    """
+    Returns futures and margin trades, paired together to correspond to position including the keys
+    below to populate TradesTable component. Keys have either Futures or Margin appended to them to
+    indicated market. Trades are aggregated together for each market with average price returned
+    in price fields. Simplistically relies on application logic that there willalways be matching
+    short and long possitions opened and closed in the futures and margins wallets to match trades
+    from respective markets.
+
+    * symbol
+    * time
+    * orderId
+    * side
+    * qty
+    * price
+    * quoteQty
+    * commission
+    * realizedPnl
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#account-trade-list-user_data)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#query-margin-account-39-s-trade-list-user_data)
+
+    TODO: Include position identifier in initiation of trades in application to match trades with to be able to
+            accommodate other trades in same accounts without including them in futures strategy application.
+
+    """
     client = await async_client()
 
     min_times = {
@@ -274,6 +363,7 @@ async def get_trades(form: recordsForm = recordsForm.detail):
     res_margin = await asyncio.gather(
         *[client.get_margin_trades(symbol=symbol) for symbol in SYMBOLS],
     )
+
     df_m = (
         pd.DataFrame(sum(res_margin, []))
         .astype({f: float for f in float_fields_m})
@@ -316,12 +406,14 @@ async def get_trades(form: recordsForm = recordsForm.detail):
     df.index = df.index.rename("id")
 
     if form == recordsForm.detail:
+        await client.close_connection()
         return (
             df.reset_index()
             .sort_values("time", ascending=False)
             .to_dict(orient="records")
         )
     elif form == recordsForm.last:
+        await client.close_connection()
         return (
             df.reset_index()
             .groupby("symbol")
@@ -335,6 +427,7 @@ async def get_trades(form: recordsForm = recordsForm.detail):
             [i for i in res_income if i["incomeType"] == "FUNDING_FEE"]
         ).astype({"income": float})
 
+        await client.close_connection()
         df = df.groupby("symbol").sum()[["commissionTotal", "realizedPnlTotal"]]
         df.columns = ["commission", "realizedPnl"]
         df["fundingFee"] = df_i.groupby("symbol").sum()["income"]
@@ -344,80 +437,6 @@ async def get_trades(form: recordsForm = recordsForm.detail):
         df["Total"] = df.sum(axis=1)
         df.index = df.index.rename("component")
         return df.reset_index().fillna(0).to_dict(orient="records")
-
-
-@app.get("/trades/margin/{symbol}")
-async def get_trades_margin(symbol: str):
-    client = await async_client()
-
-    res = await client.get_margin_trades(symbol=symbol)
-
-    return res
-
-
-class Position(BaseModel):
-    symbol: str
-    futuresQty: float
-    marginQty: float
-    leverage: int
-
-
-@app.post("/close-positions")
-async def get_trades(position: Position):
-    client = await async_client()
-
-    futures_params = {
-        "symbol": position.symbol,
-        "quantity": abs(position.futuresQty),
-        "side": "BUY" if position.futuresQty < 0 else "SELL",
-        "type": "MARKET",
-    }
-
-    margin_params = {
-        "symbol": position.symbol,
-        "quantity": abs(position.marginQty),
-        "side": "BUY" if position.marginQty < 0 else "SELL",
-        "type": "MARKET",
-    }
-
-    res = await asyncio.gather(
-        client.create_margin_order(**margin_params),
-        client.futures_create_order(**futures_params),
-    )
-
-    return res
-
-
-@app.post("/open-positions")
-async def get_open_trades(position: Position):
-    client = await async_client()
-
-    futures_params = {
-        "symbol": position.symbol,
-        "quantity": abs(position.futuresQty),
-        "side": "BUY" if position.futuresQty > 0 else "SELL",
-        "type": "MARKET",
-    }
-
-    margin_params = {
-        "symbol": position.symbol,
-        "quantity": abs(position.marginQty),
-        "side": "BUY" if position.marginQty > 0 else "SELL",
-        "type": "MARKET",
-    }
-
-    leverage_params = {"symbol": position.symbol, "leverage": position.leverage}
-
-    leverage_res = await client.futures_change_leverage(**leverage_params)
-
-    res = await asyncio.gather(
-        client.create_margin_order(**margin_params),
-        client.futures_create_order(**futures_params),
-    )
-
-    res.append(leverage_res)
-
-    return res
 
 
 class Interval(str, Enum):
@@ -439,16 +458,43 @@ class Interval(str, Enum):
 
 
 @app.get("/klines/spread/{symbol}")
-async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int = 1000):
+async def get_spread_history(
+    symbol: Symbol,
+    interval: Interval = Interval.KLINE_INTERVAL_1MINUTE,
+    limit: int = 1000,
+):
+    """
+    Returns candlestick data for spread for specified symbol at specified interval including the
+    keys below. Not possible to calculate high and low of spread since dependent on
+    inter-interval prices for each of futures and spot markets. High and low calculated
+    from one second interval updates from /klines/spread/{symbol} websocket endpoint. Used
+    to popuplate CandleChart component for spread.
+
+    * time
+    * open
+    * high
+    * low
+    * close
+    * volume
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data)
+
+    """
+
     client = await async_client()
 
     methods = [client.futures_klines, client.get_klines]
     methods = [
-        method(symbol=symbol, interval=interval.value, limit=limit)
+        method(symbol=symbol.value, interval=interval.value, limit=limit)
         for method in methods
     ]
 
     res = await asyncio.gather(*methods)
+    await client.close_connection()
+
     dfs = [pd.DataFrame(r, columns=kline_columns, dtype=float) for r in res]
 
     print([len(df) for df in dfs])
@@ -477,17 +523,42 @@ async def get_spread_history(symbol: str, interval: Interval = "1m", limit: int 
 
 @app.get("/klines/{market}/{symbol}")
 async def get_kline_history(
-    market: marketName, symbol: str, interval: Interval = "1m", limit: int = 1000
+    market: marketName,
+    symbol: Symbol,
+    interval: Interval = Interval.KLINE_INTERVAL_1MINUTE,
+    limit: int = 1000,
 ):
+    """
+    Returns candlestick data for market for specified symbol at specified interval
+    including the keys below. Used to popuplate CandleChart component for futures
+    and margin.
+
+    * time
+    * open
+    * high
+    * low
+    * close
+    * volume
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data)
+    * [Margin](https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data)
+
+
+    """
     client = await async_client()
-    print(interval)
 
     methods = {
         marketName.futures: client.futures_klines,
         marketName.spot: client.get_klines,
     }
 
-    res = await methods[market](symbol=symbol, interval=interval.value, limit=limit)
+    res = await methods[market](
+        symbol=symbol.value, interval=interval.value, limit=limit
+    )
+
+    await client.close_connection()
 
     processed_klines = [
         {key: value for key, value in zip(candle_keys, kline)} for kline in res
@@ -501,14 +572,25 @@ async def get_kline_history(
 
 @app.get("/funding/{symbol}")
 async def get_funding_history(
-    symbol: str, start_time: str = None, end_time: str = None, limit: int = 1000
+    symbol: Symbol, start_time: str = None, end_time: str = None, limit: int = 1000
 ):
+    """
+    Returns funding rate history for perpetual futures contracts. Used to populate
+    LineChart component for funding.
+
+    Binance.com API endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#get-funding-rate-history)
+
+    """
     client = await async_client()
 
     # start_time, end_time = get_times(start_time, end_time)
     # startTime=start_time, endTime=end_time,
 
-    res = await client.futures_funding_rate(symbol=symbol, limit=limit)
+    res = await client.futures_funding_rate(symbol=symbol.value, limit=limit)
+
+    await client.close_connection()
 
     processed_rates = [
         {"time": r["fundingTime"] / 1000, "value": r["fundingRate"]} for r in res
@@ -517,16 +599,121 @@ async def get_funding_history(
     return processed_rates
 
 
+class Position(BaseModel):
+    symbol: str
+    futuresQty: float
+    marginQty: float
+    leverage: int
+
+
+@app.post("/close-positions")
+async def post_close_positions(position: Position):
+    """
+    Closes open positions. Simplistically assumes only a long margin market position is
+    open with corresponding short futures position. Used by TradeAction component.
+
+    TODO: Expand logic to accommodate closing of position consisting of short margin
+            and long futures. (Shorting margin is more complicated, involving purchasing
+            underlying token and repaying leverage.)
+
+    """
+
+    client = await async_client()
+
+    futures_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.futuresQty),
+        "side": "BUY" if position.futuresQty < 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    margin_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.marginQty),
+        "side": "BUY" if position.marginQty < 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    res = await asyncio.gather(
+        client.create_margin_order(**margin_params),
+        client.futures_create_order(**futures_params),
+    )
+
+    await client.close_connection()
+
+    return res
+
+
+@app.post("/open-positions")
+async def post_open_positions(position: Position):
+    """
+    Open positions. Simplistically assumes only a long margin market position is
+    opened and corresponding short futures position also opened. Used by
+    TradeAction component.
+
+    TODO: Expand logic to accommodate opening of position consisting of short margin
+            and long futures.
+
+    """
+
+    client = await async_client()
+
+    futures_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.futuresQty),
+        "side": "BUY" if position.futuresQty > 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    margin_params = {
+        "symbol": position.symbol,
+        "quantity": abs(position.marginQty),
+        "side": "BUY" if position.marginQty > 0 else "SELL",
+        "type": "MARKET",
+    }
+
+    leverage_params = {"symbol": position.symbol, "leverage": position.leverage}
+
+    leverage_res = await client.futures_change_leverage(**leverage_params)
+
+    res = await asyncio.gather(
+        client.create_margin_order(**margin_params),
+        client.futures_create_order(**futures_params),
+    )
+
+    await client.close_connection()
+
+    res.append(leverage_res)
+
+    return res
+
+
+# **********************************************************
+# Websocket Endpoints
+# **********************************************************
+
+
 @app.websocket("/klines/futures/{symbol}")
 async def get_klines_stream_futures(
-    websocket: WebSocket, symbol: str, interval: Interval = "1m"
+    websocket: WebSocket,
+    symbol: Symbol,
+    interval: Interval = Interval.KLINE_INTERVAL_1MINUTE,
 ):
+    """
+    Streams updated futures candles for specified interval. Used to stream real-time
+    updates to CandleChart for futures.
+
+    Binance.com endpoint:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams)
+
+    """
     await websocket.accept()
 
     client = await async_client()
     bm = BinanceSocketManager(client)
     stream = bm._get_futures_socket(
-        path=f"{symbol.lower()}@kline_{interval.value}",
+        path=f"{symbol.value.lower()}@kline_{interval.value}",
         futures_type=enums.FuturesType.USD_M,
     )
 
@@ -539,20 +726,34 @@ async def get_klines_stream_futures(
             processed_kline["time"] /= 1000
             await websocket.send_json(processed_kline)
         except:
-            print(f"INFO: /klines/futures/{symbol} stream closed.")
+            print(f"INFO: /klines/futures/{symbol.value} stream closed.")
             await stream.__aexit__(None, None, None)
+            await client.close_connection()
+            await websocket.close()
 
 
 @app.websocket("/klines/spot/{symbol}")
 async def get_klines_stream_spot(
-    websocket: WebSocket, symbol: str, interval: Interval = "1m"
+    websocket: WebSocket,
+    symbol: Symbol,
+    interval: Interval = Interval.KLINE_INTERVAL_1MINUTE,
 ):
+    """
+    Streams updated spot candles for specified interval. Used to stream real-time
+    updates to CandleChart for spot.
+
+    Binance.com endpoint:
+
+    * [Spot](https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-streams)
+
+    """
+
     await websocket.accept()
 
     client = await async_client()
     bm = BinanceSocketManager(client)
 
-    stream = bm.kline_socket(symbol, interval=interval.value)
+    stream = bm.kline_socket(symbol.value, interval=interval.value)
     await stream.__aenter__()
 
     while True:
@@ -563,12 +764,17 @@ async def get_klines_stream_spot(
             processed_kline["time"] /= 1000
             await websocket.send_json(processed_kline)
         except:
-            print(f"INFO:  /klines/spot/{symbol} stream closed.")
+            print(f"INFO:  /klines/spot/{symbol.value} stream closed.")
             await stream.__aexit__(None, None, None)
+            await client.close_connection()
 
 
 @app.websocket("/klines/spread/{symbol}")
-async def get_spread_stream(websocket: WebSocket, symbol: str):
+async def get_spread_stream(
+    websocket: WebSocket,
+    symbol: Symbol,
+    interval: Interval = Interval.KLINE_INTERVAL_1MINUTE,
+):
     """
     This effectively combines the futures and spot websocket streams from
     different endpoints and calculates the spread between them as a candlestick.
@@ -576,7 +782,14 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
     so the data sent from this endpoint goes out from the async function for the
     futures websocket. The async function for the spot websocket updates and global
     variable with the most recent spot candlestick, which is then used in the futures
-    async function to calculate the spread candlestick.
+    async function to calculate the spread candlestick. Used to stream real-time
+    updates to CandleChart for spot.
+
+    Binance.com endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams)
+    * [Spot](https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-streams)
+
     """
 
     await websocket.accept()
@@ -586,7 +799,8 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
     async def futures_kline_listener(client):
         bm = BinanceSocketManager(client)
         stream = bm._get_futures_socket(
-            path=f"{symbol.lower()}@kline_1m", futures_type=enums.FuturesType.USD_M
+            path=f"{symbol.value.lower()}@kline_{interval.value}",
+            futures_type=enums.FuturesType.USD_M,
         )
         old_processed_kline = None
         await stream.__aenter__()
@@ -631,7 +845,7 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
 
     async def spot_kline_listener(client):
         bm = BinanceSocketManager(client)
-        stream = bm.kline_socket(symbol)
+        stream = bm.kline_socket(symbol.value, interval=interval.value)
         await stream.__aenter__()
 
         while True:
@@ -646,9 +860,26 @@ async def get_spread_stream(websocket: WebSocket, symbol: str):
         futures_kline_listener(client), spot_kline_listener(client)
     )
 
+    await client.close_connection()
+
 
 @app.websocket("/market-stream")
 async def get_market_stream(websocket: WebSocket):
+    """
+    Streams price updates of futures and spot prices. Updates from both
+    markets are combined into single row and returned every time the futures
+    price updates since it updates from Binance more frequently than the spot
+    rate does. The Binance spot market prices are streamed separately for
+    each symbol so all of the symbols in SYMBOLS are combined in a
+    multiplex stream from Binance. Used to update prices, and in turn,
+    position values, in PositionTable component.
+
+    Binance.com endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream-for-all-market)
+    * [Spot](https://binance-docs.github.io/apidocs/spot/en/#individual-symbol-ticker-streams)
+
+    """
 
     await websocket.accept()
     client = await async_client()
@@ -694,9 +925,21 @@ async def get_market_stream(websocket: WebSocket):
         futures_market_stream(client), spot_market_stream(client)
     )
 
+    await client.close_connection()
+
 
 @app.websocket("/user-stream")
 async def get_user_stream(websocket: WebSocket):
+    """
+    Streams updates to user account for futures and margin markets. Used to listen for completion of
+    trades and updates to positions.
+
+    Binance.com endpoints:
+
+    * [Futures](https://binance-docs.github.io/apidocs/futures/en/#user-data-streams)
+    * [Spot](https://binance-docs.github.io/apidocs/spot/en/#user-data-streams)
+
+    """
 
     await websocket.accept()
     client = await async_client()

@@ -1,5 +1,5 @@
 [paths]
-source = futures_strategy
+source = api
 
 [run]
 branch = true
