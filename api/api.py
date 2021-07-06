@@ -111,6 +111,7 @@ def read_root(request: Request):
     """
     This is here to load the simple index.html template that logs results from the
     endpoint entered there to the console for debugging.
+
     """
     return templates.TemplateResponse("index.htm", {"request": request})
 
@@ -693,6 +694,13 @@ async def post_open_positions(position: Position):
 # **********************************************************
 
 
+@app.websocket_route("/ws")
+async def websocket(websocket: WebSocket):
+    await websocket.accept()
+    await websocket.send_json({"msg": "Hello WebSocket"})
+    await websocket.close()
+
+
 @app.websocket("/klines/futures/{symbol}")
 async def get_klines_stream_futures(
     websocket: WebSocket,
@@ -767,6 +775,7 @@ async def get_klines_stream_spot(
             print(f"INFO:  /klines/spot/{symbol.value} stream closed.")
             await stream.__aexit__(None, None, None)
             await client.close_connection()
+            await websocket.close()
 
 
 @app.websocket("/klines/spread/{symbol}")
