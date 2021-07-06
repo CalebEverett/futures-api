@@ -137,24 +137,3 @@ class RESTTests(TestCase):
             dfs["spread"]["close"].sum(),
             2,
         )
-
-
-class WebSocketTests(TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.client = TestClient(app)
-
-    def test_read_klines_futures(self):
-        """
-        Ensure account endpoint returns correct keys for correct symbols.
-
-        """
-
-        with self.client.websocket_connect("/klines/futures/BTCUSDT") as websocket:
-            websocket.close()
-            self.assertTrue(False)
-
-    def test_websocket(self):
-        with self.client.websocket_connect("/ws") as websocket:
-            data = websocket.receive_json()
-            self.assertEqual(data, {"msg": "Hello WebSocket"})

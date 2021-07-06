@@ -4,7 +4,7 @@
 
 ## Overview
 
-This is an api with rest and websocket endpoints that supports a separate application to execute and monitor a spread trading strategy involving perpetual futures contracts. The basic strategy is to establish a short position in the perpetual futures contract to enable capture of funding rate payments every eight hours. A corresponding long position in the underlying asset is established at the same time to avoid taking any directional risk.
+This is an api with rest and websocket endpoints that supports a prototype application to execute and monitor a spread trading strategy involving perpetual futures contracts. The basic strategy is to establish a short position in the perpetual futures contract to enable capture of funding rate payments every eight hours. A corresponding long position in the underlying asset is established at the same time to avoid taking any directional risk.
 
 This api provides data on wallet balances, realized profit and loss, open positions, historical prices and completed trades, including real time updates via websocket. 
 
