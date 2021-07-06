@@ -13,8 +13,6 @@ from fastapi.templating import Jinja2Templates
 import pandas as pd
 from pydantic import BaseModel
 
-from fastapi.openapi.utils import get_openapi
-
 
 class Symbol(str, Enum):
     BTCUSDT = "BTCUSDT"
